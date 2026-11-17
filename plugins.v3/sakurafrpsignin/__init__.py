@@ -338,7 +338,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.4"
+    plugin_version = "1.1.5"
     plugin_author = "MoviePilot"
     author_url = "https://www.natfrp.com/"
     plugin_config_prefix = "sakurafrsignin_"
@@ -902,9 +902,13 @@ class SakuraFrpSignin(_PluginBase):
         today_ok = sum(1 for r in today_records if r.get("success"))
         today_fail = sum(1 for r in today_records if not r.get("success"))
         today_gain = 0.0
+        gain_by_account_today: Dict[str, float] = {}
         for r in today_records:
             if r.get("success") and r.get("gain") is not None:
-                today_gain += float(r.get("gain") or 0)
+                value = float(r.get("gain") or 0)
+                today_gain += value
+                account = r.get("account", "")
+                gain_by_account_today[account] = gain_by_account_today.get(account, 0.0) + value
 
         def stat_card(title: str, value: str, color: str, sub: str = "") -> dict:
             content = [
@@ -934,8 +938,8 @@ class SakuraFrpSignin(_PluginBase):
             "content": [
                 stat_card("今日签到", f"{today_ok}/{max(len(today_records), len(latest_by_account))}",
                           "success" if not today_fail else "warning", f"失败 {today_fail} 个"),
-                stat_card("本次签到获得流量", self._fmt_gain(last_gain), "primary",
-                          f"今日合计 +{today_gain:.2f} GB".replace("+0.00", "+0") if today_gain else "今日合计 +0 GB"),
+                stat_card("今日签到获得流量", self._fmt_gain(today_gain) if today_gain else "0 GB", "primary",
+                          f"最近一次 {self._fmt_gain(last_gain)}"),
                 stat_card("连续签到", f"{last_days if last_days not in (None, '') else '—'} 天", "info"),
                 stat_card("累计签到流量", self._fmt_traffic(cum_traffic), "deep-purple"),
             ],
@@ -945,7 +949,7 @@ class SakuraFrpSignin(_PluginBase):
         headers = [
             {"title": "账号", "key": "account"},
             {"title": "今日状态", "key": "result"},
-            {"title": "本次获得流量", "key": "gain"},
+            {"title": "今日获得流量", "key": "gain"},
             {"title": "连续天数", "key": "days"},
             {"title": "累计流量", "key": "traffic"},
             {"title": "最近时间", "key": "time"},
@@ -956,7 +960,7 @@ class SakuraFrpSignin(_PluginBase):
             items.append({
                 "account": account,
                 "result": "✅ 成功" if rec.get("success") else "❌ 失败",
-                "gain": self._fmt_gain(rec.get("gain")),
+                "gain": self._fmt_gain(gain_by_account_today.get(account)) if account in gain_by_account_today else "—",
                 "days": rec.get("days", ""),
                 "traffic": self._fmt_traffic(rec.get("traffic")),
                 "time": rec.get("time", ""),
