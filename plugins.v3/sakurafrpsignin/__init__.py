@@ -338,7 +338,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.3"
+    plugin_version = "1.1.4"
     plugin_author = "MoviePilot"
     author_url = "https://www.natfrp.com/"
     plugin_config_prefix = "sakurafrsignin_"
@@ -369,6 +369,7 @@ class SakuraFrpSignin(_PluginBase):
     _vision_base_url: str = ""
     _vision_api_key: str = ""
     _vision_model: str = ""
+    _backfill_gain: str = ""
 
     _DATA_KEY = "sign_history"
     _CAPTCHA_STATE_KEY = "captcha_state"
@@ -417,8 +418,11 @@ class SakuraFrpSignin(_PluginBase):
         self._vision_base_url = (config.get("vision_base_url") or "").strip() or _mp_setting("LLM_BASE_URL")
         self._vision_api_key = (config.get("vision_api_key") or "").strip() or _mp_setting("LLM_API_KEY")
         self._vision_model = (config.get("vision_model") or "").strip() or _mp_setting("LLM_MODEL", "gpt-4o")
+        # 一次性维护项：把指定流量（GB）补录到最近一条缺少 gain 的成功记录
+        self._backfill_gain = str(config.get("backfill_gain") or "").strip()
         if not getattr(self, "_lock", None):
             self._lock = threading.Lock()
+        self._apply_gain_backfill()
 
         if self._onlyonce:
             logger.info("SakuraFrp每日签到：检测到「立即运行一次」，开始执行")
@@ -451,7 +455,30 @@ class SakuraFrpSignin(_PluginBase):
             "vision_base_url": self._vision_base_url,
             "vision_api_key": self._vision_api_key,
             "vision_model": self._vision_model,
+            "backfill_gain": self._backfill_gain,
         })
+
+    def _apply_gain_backfill(self):
+        raw = (self._backfill_gain or "").strip()
+        if not raw:
+            return
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            self._backfill_gain = ""
+            return
+        history = self.get_data(self._DATA_KEY) or []
+        for rec in reversed(history):
+            if rec.get("success") and rec.get("gain") in (None, ""):
+                rec["gain"] = value
+                self.save_data(self._DATA_KEY, history)
+                logger.info(f"SakuraFrp每日签到：已补录最近一次签到获得流量 {value} GB")
+                break
+        self._backfill_gain = ""
+        try:
+            self._save_config()
+        except Exception:
+            pass
 
     def get_state(self) -> bool:
         return self._enabled
