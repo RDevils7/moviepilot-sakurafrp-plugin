@@ -57,6 +57,29 @@ except Exception as _geetest_err:  # pragma: no cover
     _GEETEST_IMPORT_ERROR = _geetest_err
 
 
+def _mp_setting(name: str, default: str = "") -> str:
+    """从 MoviePilot 运行时配置读取默认值（视觉模型复用系统 LLM 配置）。"""
+    try:
+        from app.sdk.config import settings  # type: ignore
+        value = getattr(settings, name, None)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    try:
+        from app.core.config import settings  # type: ignore
+        value = getattr(settings, name, None)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    try:
+        import os
+        return os.environ.get(name, default)
+    except Exception:
+        return default
+
+
 BASE_URL = "https://www.natfrp.com"
 OPENID_URL = "https://openid.13a.com"
 
@@ -315,7 +338,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "MoviePilot"
     author_url = "https://www.natfrp.com/"
     plugin_config_prefix = "sakurafrsignin_"
@@ -342,6 +365,10 @@ class SakuraFrpSignin(_PluginBase):
     _telegram_enabled: bool = False
     _telegram_bot_token: str = ""
     _telegram_chat_id: str = ""
+    # 视觉模型（用于九宫格点选验证码）
+    _vision_base_url: str = ""
+    _vision_api_key: str = ""
+    _vision_model: str = ""
 
     _DATA_KEY = "sign_history"
     _CAPTCHA_STATE_KEY = "captcha_state"
@@ -386,6 +413,10 @@ class SakuraFrpSignin(_PluginBase):
         self._telegram_enabled = bool(config.get("telegram_enabled", False))
         self._telegram_bot_token = (config.get("telegram_bot_token") or "").strip()
         self._telegram_chat_id = (config.get("telegram_chat_id") or "").strip()
+        # 视觉模型（九宫格点选验证码）；留空则复用 MoviePilot 的 LLM 配置
+        self._vision_base_url = (config.get("vision_base_url") or "").strip() or _mp_setting("LLM_BASE_URL")
+        self._vision_api_key = (config.get("vision_api_key") or "").strip() or _mp_setting("LLM_API_KEY")
+        self._vision_model = (config.get("vision_model") or "").strip() or _mp_setting("LLM_MODEL", "gpt-4o")
         if not getattr(self, "_lock", None):
             self._lock = threading.Lock()
 
@@ -417,6 +448,9 @@ class SakuraFrpSignin(_PluginBase):
             "telegram_enabled": self._telegram_enabled,
             "telegram_bot_token": self._telegram_bot_token,
             "telegram_chat_id": self._telegram_chat_id,
+            "vision_base_url": self._vision_base_url,
+            "vision_api_key": self._vision_api_key,
+            "vision_model": self._vision_model,
         })
 
     def get_state(self) -> bool:
@@ -655,6 +689,47 @@ class SakuraFrpSignin(_PluginBase):
                     },
                     {
                         "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "vision_base_url",
+                                        "label": "视觉模型 Base URL（识别点选验证码，可留空用系统 LLM）",
+                                        "placeholder": "https://api.openai.com/v1",
+                                    },
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "vision_api_key",
+                                        "label": "视觉模型 API Key（可留空用系统 LLM）",
+                                        "type": "password",
+                                    },
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "vision_model",
+                                        "label": "视觉模型名称（可留空用系统 LLM）",
+                                        "placeholder": "gpt-4o",
+                                    },
+                                }],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
                         "content": [{
                             "component": "VCol",
                             "props": {"cols": 12},
@@ -711,6 +786,9 @@ class SakuraFrpSignin(_PluginBase):
             "telegram_enabled": False,
             "telegram_bot_token": "",
             "telegram_chat_id": "",
+            "vision_base_url": "",
+            "vision_api_key": "",
+            "vision_model": "",
             "accounts": "",
         }
 
@@ -899,8 +977,17 @@ class SakuraFrpSignin(_PluginBase):
     def _solver_factory(self, gt: str, challenge: str, referer: str):
         if GeeTestSolver is None:
             raise RuntimeError(f"缺少 GeeTest 依赖：{_GEETEST_IMPORT_ERROR}")
+        proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
+        vision = {
+            "base_url": self._vision_base_url,
+            "api_key": self._vision_api_key,
+            "model": self._vision_model,
+            "proxies": proxies,
+            "max_retries": 3,
+        }
         return GeeTestSolver(
-            gt=gt, challenge=challenge, referer=referer, logger=logger, timeout=self._timeout
+            gt=gt, challenge=challenge, referer=referer, logger=logger,
+            timeout=self._timeout, vision=vision,
         )
 
     def _signin_account(self, account: Dict[str, str], max_rounds: Optional[int] = None) -> Dict[str, Any]:
