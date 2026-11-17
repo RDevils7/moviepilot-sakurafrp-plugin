@@ -7,7 +7,7 @@ SakuraFrp（樱花内网穿透）每日签到 —— MoviePilot V3 插件
 - 支持「账号密码」自动登录（OpenID + GeeTest）或「网页 Cookie」免登录两种方式
 - 支持多账号、失败重试、签到记录、结果通知
 - 随机错峰：每日在随机时间执行，支持「每月重新随机」避免固定时刻
-- 签到流量统计图表（累计流量趋势、连续签到天数趋势）
+- 签到流量统计图表（累计流量趋势、累计签到天数趋势）
 - 验证码问题连续失败 2 次则当天停止签到，并通过 Telegram 通知
 - 支持定时任务（cron）、立即执行一次
 
@@ -338,9 +338,9 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.6"
-    plugin_author = "MoviePilot"
-    author_url = "https://www.natfrp.com/"
+    plugin_version = "1.1.7"
+    plugin_author = "RDevils7"
+    author_url = "https://github.com/RDevils7"
     plugin_config_prefix = "sakurafrsignin_"
     plugin_order = 50
     auth_level = 1
@@ -992,7 +992,7 @@ class SakuraFrpSignin(_PluginBase):
                       "success" if not today_fail else "warning", "mdi-calendar-check"),
             stat_card("今日签到获得流量", self._fmt_gain(today_gain) if today_gain else "0 GB",
                       f"最近一次 {self._fmt_gain(last_gain)}", "primary", "mdi-swap-vertical-bold"),
-            stat_card("连续签到", f"{last_days if last_days not in (None, '') else '—'} 天",
+            stat_card("累计签到天数", f"{last_days if last_days not in (None, '') else '—'} 天",
                       "最近一次记录", "info", "mdi-fire"),
             stat_card("累计签到流量", self._fmt_traffic(cum_traffic), "签到累计", "deep-purple", "mdi-chart-areaspline"),
         ]
@@ -1028,10 +1028,10 @@ class SakuraFrpSignin(_PluginBase):
             "content": [
                 {"component": "div", "props": {"class": "sfp-summary"}, "content": cards},
                 section("账号概览", f"{len(latest_by_account)} 个账号",
-                        make_table(["账号", "今日状态", "今日获得流量", "连续天数", "累计流量", "最近时间"], account_rows),
+                        make_table(["账号", "今日状态", "今日获得流量", "累计天数", "累计流量", "最近时间"], account_rows),
                         "mdi-account-check"),
                 section("最近记录", f"{len(records)} 条",
-                        make_table(["时间", "账号", "结果", "本次获得", "连续天数", "累计流量", "说明"], detail_rows),
+                        make_table(["时间", "账号", "结果", "本次获得", "累计天数", "累计流量", "说明"], detail_rows),
                         "mdi-history"),
             ],
         })
@@ -1042,7 +1042,7 @@ class SakuraFrpSignin(_PluginBase):
         return page
 
     def _build_charts(self, history: List[Dict[str, Any]]) -> List[dict]:
-        """根据历史记录构建「签到流量」「连续天数」折线图。"""
+        """根据历史记录构建「签到流量」「累计天数」折线图。"""
         traffic_by_date: Dict[str, float] = {}
         days_by_date: Dict[str, int] = {}
         gain_by_date: Dict[str, float] = {}
@@ -1104,8 +1104,8 @@ class SakuraFrpSignin(_PluginBase):
             ))
         if any(v is not None for v in days_series):
             charts.append(line_chart(
-                "连续签到天数趋势",
-                [{"name": "连续签到天数", "data": days_series}], "天",
+                "累计签到天数趋势",
+                [{"name": "累计签到天数", "data": days_series}], "天",
             ))
         if any(gain_series):
             charts.append(line_chart(
@@ -1204,7 +1204,7 @@ class SakuraFrpSignin(_PluginBase):
                     "captcha_error": False,
                     "captcha_failures": 0,
                     "gain": 0.0,
-                    "message": f"今日已签到（连续 {sign.get('days', '?')} 天）",
+                    "message": f"今日已签到（累计 {sign.get('days', '?')} 天）",
                     "days": sign.get("days", ""),
                     "traffic": sign.get("traffic", ""),
                     "user": name,
@@ -1448,7 +1448,7 @@ class SakuraFrpSignin(_PluginBase):
             if r.get("success") and r.get("gain") is not None:
                 extra += f"，本次获得 {self._fmt_gain(r.get('gain'))}"
             if r.get("days") not in ("", None):
-                extra += f"，连续 {r.get('days')} 天"
+                extra += f"，累计 {r.get('days')} 天"
             if r.get("traffic") not in ("", None):
                 extra += f"，累计 {r.get('traffic')}"
             lines.append(f"{icon} {r.get('account')}：{r.get('message', '')}{extra}")
