@@ -338,7 +338,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.5"
+    plugin_version = "1.1.6"
     plugin_author = "MoviePilot"
     author_url = "https://www.natfrp.com/"
     plugin_config_prefix = "sakurafrsignin_"
@@ -910,102 +910,135 @@ class SakuraFrpSignin(_PluginBase):
                 account = r.get("account", "")
                 gain_by_account_today[account] = gain_by_account_today.get(account, 0.0) + value
 
-        def stat_card(title: str, value: str, color: str, sub: str = "") -> dict:
-            content = [
-                {"component": "div", "props": {"class": "text-caption text-medium-emphasis"},
-                 "content": [title]},
-                {"component": "div", "props": {"class": "text-h5 font-weight-bold"},
-                 "content": [value]},
-            ]
-            if sub:
-                content.append({"component": "div", "props": {"class": "text-caption text-medium-emphasis"},
-                                "content": [sub]})
+        css = """
+            .sfp-page { display: flex; flex-direction: column; gap: 12px; }
+            .sfp-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+            .sfp-stat { min-width: 0; padding: 10px 12px; border: 1px solid rgba(var(--v-theme-on-surface), .08); border-radius: 8px; }
+            .sfp-stat__head { display: flex; align-items: center; gap: 6px; min-width: 0; color: rgba(var(--v-theme-on-surface), .7); font-size: .75rem; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .sfp-stat__value { margin-top: 8px; font-size: 1.25rem; font-weight: 700; line-height: 1.1; }
+            .sfp-stat__meta { margin-top: 4px; color: rgba(var(--v-theme-on-surface), .56); font-size: .72rem; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .sfp-section { min-width: 0; }
+            .sfp-section-head { display: flex; align-items: center; gap: 8px; min-height: 30px; margin-bottom: 6px; }
+            .sfp-section-title { font-size: .95rem; font-weight: 700; letter-spacing: 0; }
+            .sfp-table-wrap { overflow-x: auto; border: 1px solid rgba(var(--v-theme-on-surface), .08); border-radius: 8px; }
+            .sfp-table { min-width: 620px; }
+            .sfp-table table { width: 100%; border-collapse: collapse; }
+            .sfp-table th, .sfp-table td { padding: 7px 10px; text-align: left; white-space: nowrap; font-size: .85rem; }
+            .sfp-table th { font-weight: 600; color: rgba(var(--v-theme-on-surface), .7); }
+            .sfp-table tbody tr + tr td { border-top: 1px solid rgba(var(--v-theme-on-surface), .06); }
+        """
+
+        def stat_card(title: str, value: str, meta: str, color: str, icon: str) -> dict:
             return {
-                "component": "VCol",
-                "props": {"cols": 6, "md": 3},
+                "component": "div",
+                "props": {"class": "sfp-stat"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "sfp-stat__head"},
+                        "content": [
+                            {"component": "VIcon", "props": {"size": "x-small", "color": color}, "text": icon},
+                            {"component": "span", "text": title},
+                        ],
+                    },
+                    {"component": "div", "props": {"class": f"sfp-stat__value text-{color}"}, "text": value},
+                    {"component": "div", "props": {"class": "sfp-stat__meta"}, "text": meta},
+                ],
+            }
+
+        def make_table(headers: List[str], rows: List[List[str]]) -> dict:
+            head_cells = [{"component": "th", "text": h} for h in headers]
+            body_rows = []
+            for row in rows:
+                body_rows.append({
+                    "component": "tr",
+                    "content": [{"component": "td", "text": str(cell)} for cell in row],
+                })
+            return {
+                "component": "div",
+                "props": {"class": "sfp-table-wrap"},
                 "content": [{
-                    "component": "VCard",
-                    "props": {"variant": "tonal", "color": color, "class": "pa-2"},
-                    "content": [{"component": "VCardText", "props": {}, "content": content}],
+                    "component": "VTable",
+                    "props": {"hover": True, "density": "compact", "class": "sfp-table"},
+                    "content": [
+                        {"component": "thead", "content": [{"component": "tr", "content": head_cells}]},
+                        {"component": "tbody", "content": body_rows},
+                    ],
                 }],
             }
 
-        page: List[dict] = []
+        def section(title: str, chip: str, table: dict, icon: str) -> dict:
+            return {
+                "component": "div",
+                "props": {"class": "sfp-section"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "sfp-section-head"},
+                        "content": [
+                            {"component": "VIcon", "props": {"size": "small", "color": "primary"}, "text": icon},
+                            {"component": "span", "props": {"class": "sfp-section-title"}, "text": title},
+                            {"component": "VSpacer"},
+                            {"component": "VChip", "props": {"size": "x-small", "variant": "tonal", "color": "primary"}, "text": chip},
+                        ],
+                    },
+                    table,
+                ],
+            }
 
-        # 概要卡片（仿「站点自动签到」统计卡）
+        total_accounts = max(len(today_records), len(latest_by_account))
+        cards = [
+            stat_card("今日签到", f"{today_ok}/{total_accounts}", f"失败 {today_fail} 个",
+                      "success" if not today_fail else "warning", "mdi-calendar-check"),
+            stat_card("今日签到获得流量", self._fmt_gain(today_gain) if today_gain else "0 GB",
+                      f"最近一次 {self._fmt_gain(last_gain)}", "primary", "mdi-swap-vertical-bold"),
+            stat_card("连续签到", f"{last_days if last_days not in (None, '') else '—'} 天",
+                      "最近一次记录", "info", "mdi-fire"),
+            stat_card("累计签到流量", self._fmt_traffic(cum_traffic), "签到累计", "deep-purple", "mdi-chart-areaspline"),
+        ]
+
+        account_rows = []
+        for account, rec in sorted(latest_by_account.items(),
+                                   key=lambda kv: kv[1].get("time", ""), reverse=True):
+            account_rows.append([
+                account,
+                "✅ 成功" if rec.get("success") else "❌ 失败",
+                self._fmt_gain(gain_by_account_today.get(account)) if account in gain_by_account_today else "—",
+                str(rec.get("days", "")),
+                self._fmt_traffic(rec.get("traffic")),
+                rec.get("time", ""),
+            ])
+
+        detail_rows = []
+        for rec in reversed(records[-100:]):
+            detail_rows.append([
+                rec.get("time", ""),
+                rec.get("account", ""),
+                "✅ 成功" if rec.get("success") else "❌ 失败",
+                self._fmt_gain(rec.get("gain")),
+                str(rec.get("days", "")),
+                self._fmt_traffic(rec.get("traffic")),
+                rec.get("message", ""),
+            ])
+
+        page: List[dict] = [{"component": "style", "text": css}]
         page.append({
-            "component": "VRow",
+            "component": "div",
+            "props": {"class": "sfp-page"},
             "content": [
-                stat_card("今日签到", f"{today_ok}/{max(len(today_records), len(latest_by_account))}",
-                          "success" if not today_fail else "warning", f"失败 {today_fail} 个"),
-                stat_card("今日签到获得流量", self._fmt_gain(today_gain) if today_gain else "0 GB", "primary",
-                          f"最近一次 {self._fmt_gain(last_gain)}"),
-                stat_card("连续签到", f"{last_days if last_days not in (None, '') else '—'} 天", "info"),
-                stat_card("累计签到流量", self._fmt_traffic(cum_traffic), "deep-purple"),
+                {"component": "div", "props": {"class": "sfp-summary"}, "content": cards},
+                section("账号概览", f"{len(latest_by_account)} 个账号",
+                        make_table(["账号", "今日状态", "今日获得流量", "连续天数", "累计流量", "最近时间"], account_rows),
+                        "mdi-account-check"),
+                section("最近记录", f"{len(records)} 条",
+                        make_table(["时间", "账号", "结果", "本次获得", "连续天数", "累计流量", "说明"], detail_rows),
+                        "mdi-history"),
             ],
         })
 
-        # 账号概览：最近一次签到与本次获得流量
-        headers = [
-            {"title": "账号", "key": "account"},
-            {"title": "今日状态", "key": "result"},
-            {"title": "今日获得流量", "key": "gain"},
-            {"title": "连续天数", "key": "days"},
-            {"title": "累计流量", "key": "traffic"},
-            {"title": "最近时间", "key": "time"},
-        ]
-        items = []
-        for account, rec in sorted(latest_by_account.items(),
-                                   key=lambda kv: kv[1].get("time", ""), reverse=True):
-            items.append({
-                "account": account,
-                "result": "✅ 成功" if rec.get("success") else "❌ 失败",
-                "gain": self._fmt_gain(gain_by_account_today.get(account)) if account in gain_by_account_today else "—",
-                "days": rec.get("days", ""),
-                "traffic": self._fmt_traffic(rec.get("traffic")),
-                "time": rec.get("time", ""),
-            })
-        page.append({
-            "component": "VDataTable",
-            "props": {
-                "headers": headers, "items": items, "density": "compact",
-                "hide-default-footer": True, "items-per-page": 100,
-            },
-        })
-
-        # 趋势图表
         charts = self._build_charts(records)
         if charts:
             page.append({"component": "VRow", "content": charts})
-
-        # 最近记录明细
-        detail_headers = [
-            {"title": "时间", "key": "time"},
-            {"title": "账号", "key": "account"},
-            {"title": "结果", "key": "result"},
-            {"title": "本次获得", "key": "gain"},
-            {"title": "连续天数", "key": "days"},
-            {"title": "累计流量", "key": "traffic"},
-            {"title": "说明", "key": "message"},
-        ]
-        detail_items = []
-        for rec in reversed(records[-100:]):
-            detail_items.append({
-                "time": rec.get("time", ""),
-                "account": rec.get("account", ""),
-                "result": "✅ 成功" if rec.get("success") else "❌ 失败",
-                "gain": self._fmt_gain(rec.get("gain")),
-                "days": rec.get("days", ""),
-                "traffic": self._fmt_traffic(rec.get("traffic")),
-                "message": rec.get("message", ""),
-            })
-        page.append({
-            "component": "VDataTable",
-            "props": {
-                "headers": detail_headers, "items": detail_items, "density": "compact",
-                "hide-default-footer": True, "items-per-page": 100,
-            },
-        })
         return page
 
     def _build_charts(self, history: List[Dict[str, Any]]) -> List[dict]:
