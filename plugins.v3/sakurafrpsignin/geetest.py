@@ -664,11 +664,12 @@ class GeeTestSolver:
     """插件使用的简化封装：完成 get_type/get_c_s/ajax，返回 validate。"""
 
     def __init__(self, gt: str, challenge: str, referer: str = "https://www.natfrp.com/user/",
-                 logger=None, timeout: int = 30):
+                 logger=None, timeout: int = 30, vision=None):
         self._crack = GeeTestCrack(gt, challenge, None, referer=referer)
         self._crack.debug = False
         self.logger = logger
         self.timeout = timeout
+        self.vision = vision or {}
 
     def solve(self):
         try:
@@ -684,6 +685,16 @@ class GeeTestSolver:
             return None
         if isinstance(data, dict) and data.get("result") == "success" and data.get("validate"):
             return data["validate"]
+        # 命中九宫格点选：用视觉模型识别后提交
+        if isinstance(data, dict) and data.get("result") == "click":
+            try:
+                from .captcha import solve_click_captcha
+            except Exception:
+                solve_click_captcha = None
+            if solve_click_captcha and self.vision.get("api_key"):
+                validate = solve_click_captcha(self._crack, self.vision, self.logger)
+                if validate:
+                    return validate
         if self.logger:
             try:
                 self.logger.warning(f"SakuraFrp GeeTest 未通过：{str(data)[:200]}")
