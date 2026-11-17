@@ -338,7 +338,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     plugin_author = "MoviePilot"
     author_url = "https://www.natfrp.com/"
     plugin_config_prefix = "sakurafrsignin_"
@@ -792,6 +792,56 @@ class SakuraFrpSignin(_PluginBase):
             "accounts": "",
         }
 
+    @staticmethod
+    def _fill_gains(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """为历史记录补全「本次获得流量」：优先用记录里的 gain，缺失则用累计流量差值推算。"""
+        last_traffic: Dict[str, float] = {}
+        filled: List[Dict[str, Any]] = []
+        for rec in history:
+            item = dict(rec)
+            try:
+                traffic_value = float(item.get("traffic"))
+            except (TypeError, ValueError):
+                traffic_value = None
+            gain_value = item.get("gain")
+            try:
+                gain_value = float(gain_value) if gain_value not in (None, "") else None
+            except (TypeError, ValueError):
+                gain_value = None
+            if gain_value is None:
+                previous = last_traffic.get(item.get("account"))
+                if traffic_value is not None and previous is not None and traffic_value >= previous:
+                    gain_value = round(traffic_value - previous, 2)
+            item["gain"] = gain_value
+            if traffic_value is not None:
+                last_traffic[item.get("account")] = traffic_value
+            filled.append(item)
+        return filled
+
+    @staticmethod
+    def _fmt_gain(gain) -> str:
+        if gain in (None, ""):
+            return "—"
+        try:
+            value = float(gain)
+        except (TypeError, ValueError):
+            return "—"
+        if value == 0:
+            return "0 GB"
+        text = f"{value:.2f}".rstrip("0").rstrip(".")
+        return f"+{text} GB"
+
+    @staticmethod
+    def _fmt_traffic(traffic) -> str:
+        if traffic in (None, ""):
+            return "—"
+        try:
+            value = float(traffic)
+        except (TypeError, ValueError):
+            return str(traffic)
+        text = f"{value:.2f}".rstrip("0").rstrip(".")
+        return f"{text} GB"
+
     def get_page(self) -> Optional[List[dict]]:
         history: List[Dict[str, Any]] = self.get_data(self._DATA_KEY) or []
         if not history:
@@ -805,54 +855,124 @@ class SakuraFrpSignin(_PluginBase):
                 },
             }]
 
+        records = self._fill_gains(history)
+        today = datetime.now(self._TZ).strftime("%Y-%m-%d")
+        today_records = [r for r in records if (r.get("time") or "")[:10] == today]
+
+        latest_by_account: Dict[str, Dict[str, Any]] = {}
+        for rec in records:
+            latest_by_account[rec.get("account", "")] = rec
+
+        last = records[-1] if records else {}
+        last_gain = last.get("gain")
+        last_days = last.get("days", "")
+        cum_traffic = last.get("traffic", "")
+        for rec in reversed(records):
+            if rec.get("traffic") not in (None, ""):
+                cum_traffic = rec.get("traffic")
+                break
+
+        today_ok = sum(1 for r in today_records if r.get("success"))
+        today_fail = sum(1 for r in today_records if not r.get("success"))
+        today_gain = 0.0
+        for r in today_records:
+            if r.get("success") and r.get("gain") is not None:
+                today_gain += float(r.get("gain") or 0)
+
+        def stat_card(title: str, value: str, color: str, sub: str = "") -> dict:
+            content = [
+                {"component": "div", "props": {"class": "text-caption text-medium-emphasis"},
+                 "content": [title]},
+                {"component": "div", "props": {"class": "text-h5 font-weight-bold"},
+                 "content": [value]},
+            ]
+            if sub:
+                content.append({"component": "div", "props": {"class": "text-caption text-medium-emphasis"},
+                                "content": [sub]})
+            return {
+                "component": "VCol",
+                "props": {"cols": 6, "md": 3},
+                "content": [{
+                    "component": "VCard",
+                    "props": {"variant": "tonal", "color": color, "class": "pa-2"},
+                    "content": [{"component": "VCardText", "props": {}, "content": content}],
+                }],
+            }
+
         page: List[dict] = []
 
-        # 流量/天数统计图表
-        charts = self._build_charts(history)
-        if charts:
-            page.append({"component": "VRow", "content": charts})
-
-        # 概要
-        dates = sorted({(r.get("time") or "")[:10] for r in history if (r.get("time") or "")[:10]})
-        last = history[-1] if history else {}
+        # 概要卡片（仿「站点自动签到」统计卡）
         page.append({
-            "component": "VAlert",
+            "component": "VRow",
+            "content": [
+                stat_card("今日签到", f"{today_ok}/{max(len(today_records), len(latest_by_account))}",
+                          "success" if not today_fail else "warning", f"失败 {today_fail} 个"),
+                stat_card("本次签到获得流量", self._fmt_gain(last_gain), "primary",
+                          f"今日合计 +{today_gain:.2f} GB".replace("+0.00", "+0") if today_gain else "今日合计 +0 GB"),
+                stat_card("连续签到", f"{last_days if last_days not in (None, '') else '—'} 天", "info"),
+                stat_card("累计签到流量", self._fmt_traffic(cum_traffic), "deep-purple"),
+            ],
+        })
+
+        # 账号概览：最近一次签到与本次获得流量
+        headers = [
+            {"title": "账号", "key": "account"},
+            {"title": "今日状态", "key": "result"},
+            {"title": "本次获得流量", "key": "gain"},
+            {"title": "连续天数", "key": "days"},
+            {"title": "累计流量", "key": "traffic"},
+            {"title": "最近时间", "key": "time"},
+        ]
+        items = []
+        for account, rec in sorted(latest_by_account.items(),
+                                   key=lambda kv: kv[1].get("time", ""), reverse=True):
+            items.append({
+                "account": account,
+                "result": "✅ 成功" if rec.get("success") else "❌ 失败",
+                "gain": self._fmt_gain(rec.get("gain")),
+                "days": rec.get("days", ""),
+                "traffic": self._fmt_traffic(rec.get("traffic")),
+                "time": rec.get("time", ""),
+            })
+        page.append({
+            "component": "VDataTable",
             "props": {
-                "type": "success",
-                "variant": "tonal",
-                "text": (
-                    f"共 {len(dates)} 天有签到记录；最近一次连续签到 {last.get('days', '?')} 天；"
-                    f"当前累计签到流量 {last.get('traffic', '?')}（单位以站点为准）。"
-                ),
+                "headers": headers, "items": items, "density": "compact",
+                "hide-default-footer": True, "items-per-page": 100,
             },
         })
 
-        headers = [
+        # 趋势图表
+        charts = self._build_charts(records)
+        if charts:
+            page.append({"component": "VRow", "content": charts})
+
+        # 最近记录明细
+        detail_headers = [
             {"title": "时间", "key": "time"},
             {"title": "账号", "key": "account"},
             {"title": "结果", "key": "result"},
+            {"title": "本次获得", "key": "gain"},
             {"title": "连续天数", "key": "days"},
             {"title": "累计流量", "key": "traffic"},
             {"title": "说明", "key": "message"},
         ]
-        items = []
-        for rec in reversed(history[-100:]):
-            items.append({
+        detail_items = []
+        for rec in reversed(records[-100:]):
+            detail_items.append({
                 "time": rec.get("time", ""),
                 "account": rec.get("account", ""),
                 "result": "✅ 成功" if rec.get("success") else "❌ 失败",
+                "gain": self._fmt_gain(rec.get("gain")),
                 "days": rec.get("days", ""),
-                "traffic": rec.get("traffic", ""),
+                "traffic": self._fmt_traffic(rec.get("traffic")),
                 "message": rec.get("message", ""),
             })
         page.append({
             "component": "VDataTable",
             "props": {
-                "headers": headers,
-                "items": items,
-                "density": "compact",
-                "hide-default-footer": True,
-                "items-per-page": 100,
+                "headers": detail_headers, "items": detail_items, "density": "compact",
+                "hide-default-footer": True, "items-per-page": 100,
             },
         })
         return page
@@ -861,6 +981,7 @@ class SakuraFrpSignin(_PluginBase):
         """根据历史记录构建「签到流量」「连续天数」折线图。"""
         traffic_by_date: Dict[str, float] = {}
         days_by_date: Dict[str, int] = {}
+        gain_by_date: Dict[str, float] = {}
         for rec in history:
             d = (rec.get("time") or "")[:10]
             if not d:
@@ -873,12 +994,18 @@ class SakuraFrpSignin(_PluginBase):
                 days_by_date[d] = int(rec.get("days"))
             except (TypeError, ValueError):
                 pass
+            if rec.get("gain") is not None:
+                try:
+                    gain_by_date[d] = gain_by_date.get(d, 0.0) + float(rec.get("gain"))
+                except (TypeError, ValueError):
+                    pass
 
-        dates = sorted(set(list(traffic_by_date.keys()) + list(days_by_date.keys())))
+        dates = sorted(set(list(traffic_by_date.keys()) + list(days_by_date.keys()) + list(gain_by_date.keys())))
         if len(dates) < 2:
             return []
         traffic_series = [traffic_by_date.get(d) for d in dates]
         days_series = [days_by_date.get(d) for d in dates]
+        gain_series = [round(gain_by_date.get(d, 0.0), 2) for d in dates]
 
         def line_chart(title: str, series: List[dict], y_title: str) -> dict:
             return {
@@ -915,6 +1042,11 @@ class SakuraFrpSignin(_PluginBase):
             charts.append(line_chart(
                 "连续签到天数趋势",
                 [{"name": "连续签到天数", "data": days_series}], "天",
+            ))
+        if any(gain_series):
+            charts.append(line_chart(
+                "每日签到获得流量（GB）",
+                [{"name": "每日获得流量", "data": gain_series}], "GB",
             ))
         return charts
 
@@ -1007,6 +1139,7 @@ class SakuraFrpSignin(_PluginBase):
                     "success": True,
                     "captcha_error": False,
                     "captcha_failures": 0,
+                    "gain": 0.0,
                     "message": f"今日已签到（连续 {sign.get('days', '?')} 天）",
                     "days": sign.get("days", ""),
                     "traffic": sign.get("traffic", ""),
@@ -1014,10 +1147,19 @@ class SakuraFrpSignin(_PluginBase):
                 }
             result = client.do_sign(self._solver_factory, retries=rounds)
             extra = result.get("extra") or {}
+            before_traffic = sign.get("traffic")
+            after_traffic = extra.get("traffic", before_traffic)
+            gain = None
+            try:
+                if before_traffic is not None and after_traffic is not None:
+                    gain = round(float(after_traffic) - float(before_traffic), 2)
+            except (TypeError, ValueError):
+                gain = None
             return {
                 "success": bool(result.get("success")),
                 "captcha_error": bool(result.get("captcha_error")),
                 "captcha_failures": int(result.get("captcha_failures") or 0),
+                "gain": gain,
                 "message": result.get("message", ""),
                 "days": extra.get("days", sign.get("days", "")),
                 "traffic": extra.get("traffic", sign.get("traffic", "")),
@@ -1204,6 +1346,7 @@ class SakuraFrpSignin(_PluginBase):
                 "success": bool(res.get("success")),
                 "days": res.get("days", ""),
                 "traffic": res.get("traffic", ""),
+                "gain": res.get("gain"),
                 "message": res.get("message", ""),
             })
         # 保留天数
@@ -1230,10 +1373,16 @@ class SakuraFrpSignin(_PluginBase):
             return
         success = sum(1 for r in results if r.get("success"))
         total = len(results)
-        lines = [f"共 {total} 个账号，成功 {success} 个" + ("" if success == total else "，存在失败")]
+        total_gain = sum(float(r.get("gain") or 0) for r in results if r.get("success"))
+        head = f"共 {total} 个账号，成功 {success} 个" + ("" if success == total else "，存在失败")
+        if total_gain:
+            head += f"，本次共获得 {self._fmt_gain(total_gain)}"
+        lines = [head]
         for r in results:
             icon = "✅" if r.get("success") else "❌"
             extra = ""
+            if r.get("success") and r.get("gain") is not None:
+                extra += f"，本次获得 {self._fmt_gain(r.get('gain'))}"
             if r.get("days") not in ("", None):
                 extra += f"，连续 {r.get('days')} 天"
             if r.get("traffic") not in ("", None):
