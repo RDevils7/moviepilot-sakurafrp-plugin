@@ -352,7 +352,7 @@ class SakuraFrpSignin(_PluginBase):
     plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并通过 MoviePilot 通知推送。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.8"
+    plugin_version = "1.1.9"
     plugin_author = "RDevils7"
     author_url = "https://github.com/RDevils7"
     plugin_config_prefix = "sakurafrsignin_"
@@ -846,6 +846,24 @@ class SakuraFrpSignin(_PluginBase):
             }]
 
         records = self._fill_gains(history)
+        # 过滤历史版本遗留的“重复签到/已签到”伪成功记录：
+        # 同账号同一天若已存在一条有实际流量增益的成功记录，则隐藏其余 0 增益的成功记录。
+        positive_keys = set()
+        for rec in records:
+            if rec.get("success") and rec.get("gain") not in (None, ""):
+                try:
+                    if float(rec.get("gain")) > 0:
+                        positive_keys.add(((rec.get("account") or ""), (rec.get("time") or "")[:10]))
+                except (TypeError, ValueError):
+                    pass
+        filtered_records = []
+        for rec in records:
+            key = ((rec.get("account") or ""), (rec.get("time") or "")[:10])
+            is_zero_success = rec.get("success") and rec.get("gain") in (None, "", 0, 0.0)
+            if is_zero_success and key in positive_keys:
+                continue
+            filtered_records.append(rec)
+        records = filtered_records
         today = datetime.now(self._TZ).strftime("%Y-%m-%d")
         today_records = [r for r in records if (r.get("time") or "")[:10] == today]
 
