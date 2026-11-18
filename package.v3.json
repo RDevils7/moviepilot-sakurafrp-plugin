@@ -1,9 +1,9 @@
 {
   "SakuraFrpSignin": {
     "name": "SakuraFrp每日签到",
-    "description": "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、签到流量统计图表、验证码连续失败自动停止并 Telegram 通知。",
+    "description": "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、签到流量统计图表、验证码连续失败自动停止并通过 MoviePilot 通知推送。",
     "labels": "签到,工具",
-    "version": "1.1.7",
+    "version": "1.1.8",
     "icon": "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico",
     "author": "RDevils7",
     "level": 1,
@@ -16,7 +16,8 @@
       "v1.1.4": "统计数据补录与展示优化。",
       "v1.1.5": "统计卡片改为按今日累计获得流量展示，避免重复运行显示 0。",
       "v1.1.6": "修复详情页文字不显示：按渲染器要求把文字放到节点 text 字段，使用与站点自动签到一致的 VTable/div 结构。",
-      "v1.1.7": "「连续天数」统一改为「累计天数」（站点该字段为累计签到天数）；作者改为 RDevils7。"
+      "v1.1.7": "「连续天数」统一改为「累计天数」（站点该字段为累计签到天数）；作者改为 RDevils7。",
+      "v1.1.8": "修复当天已签到仍重复签到：签到前按 signed/last 判断，已签到则跳过且不写记录/不发通知；通知统一使用 MoviePilot 通知渠道，移除独立 Telegram 配置。"
     }
   }
 }
