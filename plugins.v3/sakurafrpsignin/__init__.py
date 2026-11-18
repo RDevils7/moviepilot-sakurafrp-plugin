@@ -8,7 +8,7 @@ SakuraFrp（樱花内网穿透）每日签到 —— MoviePilot V3 插件
 - 支持多账号、失败重试、签到记录、结果通知
 - 随机错峰：每日在随机时间执行，支持「每月重新随机」避免固定时刻
 - 签到流量统计图表（累计流量趋势、累计签到天数趋势）
-- 验证码问题连续失败 2 次则当天停止签到，并通过 Telegram 通知
+- 验证码问题连续失败 2 次则当天停止签到，并通过 MoviePilot 通知推送
 - 支持定时任务（cron）、立即执行一次
 
 说明
@@ -298,6 +298,9 @@ class _NatFrpClient:
         except Exception:
             return {"success": False, "message": f"签到返回非 JSON：{resp.text[:200]}"}
 
+        already_msg = isinstance(result, dict) and any(
+            token in str(result.get("msg", "")) for token in ("已经签到", "已签到")
+        )
         ok = (
             isinstance(result, str)
             or (isinstance(result, dict) and (
@@ -316,13 +319,24 @@ class _NatFrpClient:
                 "traffic": sign.get("traffic"),
                 "last": sign.get("last"),
             }
-            if sign.get("signed"):
+            if sign.get("signed") and not already_msg:
                 ok = True
         except Exception as exc:
             logger.warning(f"SakuraFrp 签到后校验状态失败：{exc}")
 
+        if already_msg and not ok:
+            return {
+                "success": True,
+                "skipped": True,
+                "captcha_error": False,
+                "captcha_failures": captcha_failures,
+                "message": "今日已签到，跳过自动签到",
+                "extra": extra,
+            }
+
         return {
             "success": ok,
+            "skipped": False,
             "captcha_error": False,
             "captcha_failures": captcha_failures,
             "message": str(result)[:200] if not ok else "签到成功",
@@ -335,10 +349,10 @@ class SakuraFrpSignin(_PluginBase):
 
     # ── 插件元信息 ──
     plugin_name = "SakuraFrp每日签到"
-    plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并 Telegram 通知。"
+    plugin_desc = "自动完成 SakuraFrp（樱花内网穿透）每日签到；支持账号密码/Cookie、多账号、随机错峰、流量统计图表，验证码连续失败自动停止并通过 MoviePilot 通知推送。"
     plugin_icon = "https://raw.githubusercontent.com/natfrp/wiki/master/.vuepress/public/favicon.ico"
     plugin_color = "#F472B6"
-    plugin_version = "1.1.7"
+    plugin_version = "1.1.8"
     plugin_author = "RDevils7"
     author_url = "https://github.com/RDevils7"
     plugin_config_prefix = "sakurafrsignin_"
@@ -361,10 +375,6 @@ class SakuraFrpSignin(_PluginBase):
     _random_stagger: bool = True
     _stagger_window: int = 60
     _stagger_monthly: bool = True
-    # Telegram 通知
-    _telegram_enabled: bool = False
-    _telegram_bot_token: str = ""
-    _telegram_chat_id: str = ""
     # 视觉模型（用于九宫格点选验证码）
     _vision_base_url: str = ""
     _vision_api_key: str = ""
@@ -410,10 +420,6 @@ class SakuraFrpSignin(_PluginBase):
         except (TypeError, ValueError):
             self._stagger_window = 60
         self._stagger_monthly = bool(config.get("stagger_monthly", True))
-        # Telegram 通知
-        self._telegram_enabled = bool(config.get("telegram_enabled", False))
-        self._telegram_bot_token = (config.get("telegram_bot_token") or "").strip()
-        self._telegram_chat_id = (config.get("telegram_chat_id") or "").strip()
         # 视觉模型（九宫格点选验证码）；留空则复用 MoviePilot 的 LLM 配置
         self._vision_base_url = (config.get("vision_base_url") or "").strip() or _mp_setting("LLM_BASE_URL")
         self._vision_api_key = (config.get("vision_api_key") or "").strip() or _mp_setting("LLM_API_KEY")
@@ -449,9 +455,6 @@ class SakuraFrpSignin(_PluginBase):
             "random_stagger": self._random_stagger,
             "stagger_window": self._stagger_window,
             "stagger_monthly": self._stagger_monthly,
-            "telegram_enabled": self._telegram_enabled,
-            "telegram_bot_token": self._telegram_bot_token,
-            "telegram_chat_id": self._telegram_chat_id,
             "vision_base_url": self._vision_base_url,
             "vision_api_key": self._vision_api_key,
             "vision_model": self._vision_model,
@@ -682,43 +685,6 @@ class SakuraFrpSignin(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "telegram_enabled", "label": "Telegram 通知"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 5},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {
-                                        "model": "telegram_bot_token",
-                                        "label": "Telegram Bot Token",
-                                        "placeholder": "123456:ABC-DEF...",
-                                    },
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {
-                                        "model": "telegram_chat_id",
-                                        "label": "Telegram Chat ID",
-                                        "placeholder": "-1001234567890",
-                                    },
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
                                 "content": [{
                                     "component": "VTextField",
@@ -810,9 +776,6 @@ class SakuraFrpSignin(_PluginBase):
             "random_stagger": True,
             "stagger_window": 60,
             "stagger_monthly": True,
-            "telegram_enabled": False,
-            "telegram_bot_token": "",
-            "telegram_chat_id": "",
             "vision_base_url": "",
             "vision_api_key": "",
             "vision_model": "",
@@ -1198,19 +1161,34 @@ class SakuraFrpSignin(_PluginBase):
                 )
             name = info.get("name", account.get("label", "未知用户"))
             sign = info.get("sign") or {}
-            if sign.get("signed"):
+            today = datetime.now(self._TZ).strftime("%Y-%m-%d")
+            sign_last = str(sign.get("last") or "")[:10]
+            if sign.get("signed") or sign_last == today:
                 return {
                     "success": True,
+                    "skipped": True,
                     "captcha_error": False,
                     "captcha_failures": 0,
                     "gain": 0.0,
-                    "message": f"今日已签到（累计 {sign.get('days', '?')} 天）",
+                    "message": f"今日已签到（累计 {sign.get('days', '?')} 天），跳过自动签到",
                     "days": sign.get("days", ""),
                     "traffic": sign.get("traffic", ""),
                     "user": name,
                 }
             result = client.do_sign(self._solver_factory, retries=rounds)
             extra = result.get("extra") or {}
+            if result.get("skipped"):
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "captcha_error": False,
+                    "captcha_failures": 0,
+                    "gain": 0.0,
+                    "message": "今日已签到，跳过自动签到",
+                    "days": extra.get("days", sign.get("days", "")),
+                    "traffic": extra.get("traffic", sign.get("traffic", "")),
+                    "user": name,
+                }
             before_traffic = sign.get("traffic")
             after_traffic = extra.get("traffic", before_traffic)
             gain = None
@@ -1221,6 +1199,7 @@ class SakuraFrpSignin(_PluginBase):
                 gain = None
             return {
                 "success": bool(result.get("success")),
+                "skipped": False,
                 "captcha_error": bool(result.get("captcha_error")),
                 "captcha_failures": int(result.get("captcha_failures") or 0),
                 "gain": gain,
@@ -1285,9 +1264,9 @@ class SakuraFrpSignin(_PluginBase):
             res["time"] = now_str
             res["captcha_error"] = bool(res.get("captcha_error"))
             results.append(res)
+            status_text = "跳过（今日已签到）" if res.get("skipped") else ("成功" if res.get("success") else "失败")
             logger.info(
-                f"SakuraFrp每日签到：账号 [{label}] "
-                f"{'成功' if res.get('success') else '失败'} - {res.get('message', '')}"
+                f"SakuraFrp每日签到：账号 [{label}] {status_text} - {res.get('message', '')}"
             )
 
             # 验证码问题累计失败达到上限（默认 2 次）→ 当天停止
@@ -1305,10 +1284,14 @@ class SakuraFrpSignin(_PluginBase):
                     break
 
         self.save_data(self._CAPTCHA_STATE_KEY, state)
-        self._save_history(results, now_str)
-        self._notify(results)
+        real_results = [r for r in results if not r.get("skipped")]
+        if not real_results:
+            logger.info("SakuraFrp每日签到：今日已签到，自动签到跳过")
+            return results
+        self._save_history(real_results, now_str)
+        self._notify(real_results)
         if stopped_now:
-            self._notify_captcha_stop(today, results)
+            self._notify_captcha_stop(today, real_results)
         return results
 
     # ── 随机错峰 ────────────────────────────────────────────
@@ -1357,32 +1340,10 @@ class SakuraFrpSignin(_PluginBase):
         jitter = random.randint(0, min(300, max(0, window // 10)))
         return min(window, base + jitter)
 
-    # ── Telegram 通知 ───────────────────────────────────────
-    def _send_telegram(self, text: str) -> bool:
-        if not (self._telegram_enabled and self._telegram_bot_token and self._telegram_chat_id):
-            return False
-        url = f"https://api.telegram.org/bot{self._telegram_bot_token}/sendMessage"
-        payload = {
-            "chat_id": self._telegram_chat_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        proxies = None
-        if self._proxy:
-            proxies = {"http": self._proxy, "https": self._proxy}
-        try:
-            resp = requests.post(url, json=payload, timeout=self._timeout, proxies=proxies)
-            data = resp.json()
-            if not data.get("ok"):
-                logger.error(f"SakuraFrp每日签到：Telegram 发送失败：{str(data)[:200]}")
-                return False
-            logger.info("SakuraFrp每日签到：Telegram 通知已发送")
-            return True
-        except Exception as exc:
-            logger.error(f"SakuraFrp每日签到：Telegram 发送异常：{exc}")
-            return False
-
+    # ── 通知（统一走 MoviePilot 通知渠道）──────────────────────
     def _notify_captcha_stop(self, date: str, results: List[Dict[str, Any]]):
+        if not self._notify_enabled:
+            return
         lines = [f"⚠️ SakuraFrp 签到因验证码问题连续失败 2 次，已停止今日（{date}）后续签到。"]
         for r in results:
             icon = "✅" if r.get("success") else "❌"
@@ -1390,16 +1351,14 @@ class SakuraFrpSignin(_PluginBase):
         lines.append("可稍后点击「立即运行一次」手动重试，或等待明天定时任务。")
         text = "\n".join(lines)
         logger.warning(text)
-        sent = self._send_telegram(text)
-        if not sent and self._notify_enabled:
-            try:
-                if NotificationType is not None:
-                    self.post_message(mtype=NotificationType.Plugin,
-                                      title="⚠️ SakuraFrp 签到已暂停", text=text)
-                else:
-                    self.post_message(title="⚠️ SakuraFrp 签到已暂停", text=text)
-            except Exception as exc:
-                logger.error(f"SakuraFrp每日签到：发送暂停通知失败：{exc}")
+        try:
+            if NotificationType is not None:
+                self.post_message(mtype=NotificationType.Plugin,
+                                  title="⚠️ SakuraFrp 签到已暂停", text=text)
+            else:
+                self.post_message(title="⚠️ SakuraFrp 签到已暂停", text=text)
+        except Exception as exc:
+            logger.error(f"SakuraFrp每日签到：发送暂停通知失败：{exc}")
 
     def _save_history(self, results: List[Dict[str, Any]], now_str: str):
         history: List[Dict[str, Any]] = self.get_data(self._DATA_KEY) or []
